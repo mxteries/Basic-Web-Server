@@ -1,7 +1,7 @@
 
 all: webserv
 clean:
-		-rm -f webserv
+	-rm -f webserv
 
-webserv:
+webserv: webserv.c
 	gcc -Wall -o webserv webserv.c

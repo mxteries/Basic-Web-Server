@@ -1,73 +1,63 @@
-#include<stdio.h>
-#include<string.h>
-#include<stdlib.h>
-#include<unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-int sockfd;
+// all this does is send a message to the client right now
+int handle_request(int client) {
+    // write to the client_socket
+    char message[] = "You've connected to the server";
+    return send(client, message, strlen(message), 0);
+}
 
-int start_server(char *port) {
-    struct addrinfo hints, *res, *p;
+int start_server(uint16_t port) {
+    // create a socket for our webserver
+    int webserver;
+    webserver = socket(AF_INET, SOCK_STREAM, 0);
 
-    memset (&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-    
-    // get address for server socket to bind to (and be reachable from)
-    if (getaddrinfo( NULL, port, &hints, &res) != 0)
-    {
-        printf("Error: unable to get address info\n");
-        exit(1);
+    // set up the address of the server
+    struct sockaddr_in server_address;
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(port);
+    server_address.sin_addr.s_addr = INADDR_ANY;
+
+    // we defined an address for our webserver, 
+    // now let's connect them together using bind
+    if (bind(webserver, (struct sockaddr*) &server_address, sizeof(server_address)) == -1) {
+        perror("Bind error");
     }
+    listen(webserver, 5); // have our webserver listen to up to 5 connections
     
-    // apparently we have to loop through list of all potential interfaces, until socket setup is succesful
-    for (p = res; p != NULL; p = p->ai_next) {
-        // create a socket
-        if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-            printf("Error: unable to create socket\n");
-            continue;
-        }
-        int yes = 1;
-        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
-            perror("setsockopt");
-            close(sockfd);
-            freeaddrinfo(res); // all done with this structure
-            exit(1);
-        }
-        if ((bind(sockfd, res->ai_addr, res->ai_addrlen)) == -1) {
-            printf("Error: unable to bind socket to address");
-            close(sockfd);
-            continue;
-        }
-        printf("Succesfully setup socket\n");
-        break;
-    }
-    
-    // sets the socket as an active server
-    if ( listen (sockfd, 100) != 0 )
-    {
-        printf("Error: listen failed");
-        exit(1);
+    // accept a new connection (from our local machine)
+    int client_socket = accept(webserver, NULL, NULL);
+    printf("Connection accepted for client %d\n", client_socket);
+
+    // process the client's request by forking a child process
+    if (fork() == 0) {
+        printf("Child process running request for client %d\n", client_socket);
+        handle_request(client_socket);
     }
 
-    return 1;
+    // might want to set up a signal handler for sigint to call close
+    close(webserver);
+    return 0;
 }
 
 int main(int argc, char const *argv[]) {
     if (argc != 2) {
         printf("Error: to start server use: $./webserv port-number\n");
-        return 0;
-    }
-
-    char port[6];
-    strcpy(port, argv[1]);
-    if (start_server(port) != 1) {
-        printf("Error: server unable to start");
         exit(1);
     }
+
+    uint16_t port = (uint16_t) strtol(argv[1], NULL, 10);
+    printf("Starting server on port %u\n", port);
+    if (start_server(port) != 0) {
+        perror("Error: ");
+        exit(1);
+    }
+    return 0;
 }
