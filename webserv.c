@@ -12,19 +12,19 @@ int sockfd;
 
 int start_server(char *port) {
     struct addrinfo hints, *res, *p;
-    
-	memset (&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
+
+    memset (&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
     
     // get address for server socket to bind to (and be reachable from)
     if (getaddrinfo( NULL, port, &hints, &res) != 0)
-	{
-		printf("Error: unable to get address info\n");
-		exit(1);
-	}
-
+    {
+        printf("Error: unable to get address info\n");
+        exit(1);
+    }
+    
     // apparently we have to loop through list of all potential interfaces, until socket setup is succesful
     for (p = res; p != NULL; p = p->ai_next) {
         // create a socket
@@ -47,13 +47,13 @@ int start_server(char *port) {
         printf("Succesfully setup socket\n");
         break;
     }
-
-	// sets the socket as an active server
-	if ( listen (sockfd, 100) != 0 )
-	{
-		printf("Error: listen failed");
-		exit(1);
-	}
+    
+    // sets the socket as an active server
+    if ( listen (sockfd, 100) != 0 )
+    {
+        printf("Error: listen failed");
+        exit(1);
+    }
 
     return 1;
 }
