@@ -8,37 +8,53 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-enum {
-    BUF_SIZE = 500,  /* size to hold http requests and responses */
-    LOGGING  = 1     /* if 1, log to terminal, if 0, turn off logging */
+
+/* webserv.c implements a simple HTTP 1.1 server 
+with short-lived connections using sockets */
+
+enum {               /* constants */
+    LOGGING   = 1,   /* if 1, log to terminal, if 0, turn off logging */
+    PATH_SIZE = 255, /* size of requested path */  
+    BUF_SIZE  = 500  /* size of buffer to hold http requests and responses */
 };
 
-// write requests and responses to terminal
+// log all requests and responses to terminal
 void log_to_stdout(char* data, ssize_t data_size) {
     if (LOGGING) {
-        write(1, data, data_size);
+        write(STDOUT_FILENO, data, data_size);
     }
 }
 
 // all this does right now is send back the client's request
-int handle_request(int client, char* request, ssize_t request_size) {
-    // must send a correctly formatted HTTP response or else the browser wont display
+// TODO: determine different content-types
+void handle_GET(int client, char* requested_file) {
     char response[BUF_SIZE];
+    snprintf(response, BUF_SIZE, "HTTP/1.0 200 OK\r\nContent-Type: unknown\r\nContent-Length: %lu\r\n\r\n%s\n", strlen(requested_file), requested_file);
+    int response_len = strlen(response);
+    if (send(client, response, response_len, 0) == -1) {
+        perror("GET response send error");
+    }
+    log_to_stdout(response, response_len);
+}
+
+// determines the method of the request (eg. GET) and the requested file
+// then calls the appropriate function to deal with the request
+void handle_request(int client, char* request, ssize_t request_size) {
     log_to_stdout(request, request_size);
 
-    snprintf(response, BUF_SIZE, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %li\r\n\r\n", request_size);
-    if (send(client, response, strlen(response), 0) == -1) {
-        perror("Send error");
-        return -1;
+    // parse the request by getting the first and second word
+    char method[10];
+    char request_path[PATH_SIZE];
+    if (sscanf(request, "%s %s", method, request_path) < 2) {
+        perror("Parsing request failed");
     }
-    
-    log_to_stdout(response, strlen(response));
 
-    if (send(client, request, request_size, 0) == -1) {
-        perror("Send error");
-        return -1;
+    // deal with the request
+    if (strcmp(method, "GET") == 0) {
+        handle_GET(client, request_path);
+    } else {
+        // no other methods have been implemented
     }
-    return 0;
 }
 
 // code adapted from APUE textbook (pg 615)
@@ -54,7 +70,6 @@ int serve(int server) {
         }
 
         // process the client's request by forking a child process
-        // I think forking causes the connection to the client to occur twice
         if ((pid = fork()) < 0) {
             perror("fork error");
         } else if (pid == 0) {
