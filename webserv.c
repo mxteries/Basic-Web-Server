@@ -7,7 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
+#include <time.h>
 
 /* webserv.c implements a simple HTTP 1.1 server 
 with short-lived connections using sockets */
@@ -25,16 +25,81 @@ void log_to_stdout(char* data, ssize_t data_size) {
     }
 }
 
+// returns the current date like: Fri, 31 Dec 1999 23:59:59 GMT
+// for the HTTP date header
+// source: https://stackoverflow.com/a/7548846
+void get_date(char* buf, int date_size) {
+    time_t now = time(0);
+    struct tm tm = *gmtime(&now);
+    strftime(buf, date_size, "%a, %d %b %Y %H:%M:%S %Z", &tm);
+}
+
+/**
+ * this function can be used to create and format an HTTP 1.1 response
+ * buf: response is stored in buf (size BUF_SIZE)
+ * status: HTTP status code (eg. 200, 404, 501) 
+ * type: content type (eg. text/plain)
+ * len: content length (ie. size of body)
+ * body: the content being requested
+ */  
+void create_response(char* buf, int status, char* type, size_t len, char* body) {
+    char date[BUF_SIZE];
+    get_date(date, BUF_SIZE);
+
+    // create a status message to go with the status code
+    char status_msg[20];
+    if (status == 200) {
+        strcpy(status_msg, "OK");
+    } else if (status == 404) {
+        strcpy(status_msg, "Not Found");
+    } else if (status == 501) {
+        strcpy(status_msg, "Not Implemented");
+    } else {
+        strcpy(status_msg, "Unknown");
+    }
+
+    char* response = "HTTP/1.1 %d %s\r\nDate: %s\r\nConnection: close\r\nContent-Type: %s\r\nContent-Length: %lu\r\n\r\n%s\n\n";
+    snprintf(buf, BUF_SIZE, response, status, status_msg, date, type, len, body);
+}
+
+// log a response, and send it
+// returns -1 if send failed
+int send_response(int client, char* response) {
+    int response_len = strlen(response);
+    log_to_stdout(response, response_len);
+    return send(client, response, response_len, 0);
+}
+
+// file not found error
+void send_404(int client) {
+    char* err_msg = "The requested item could not be found";
+    char response[BUF_SIZE];
+    create_response(response, 404, "text/plain", strlen(err_msg), err_msg);
+    if (send_response(client, response) == -1) {
+        perror("404 send error");
+    }
+}
+
+// method not implemented error
+void send_501(int client) {
+    char* err_msg = "The requested method has not implemented";
+    char response[BUF_SIZE];
+    create_response(response, 501, "text/plain", strlen(err_msg), err_msg);
+    if (send_response(client, response) == -1) {
+        perror("501 send error");
+    }
+}
+
 // all this does right now is send back the client's request
 // TODO: determine different content-types
 void handle_GET(int client, char* requested_file) {
+    // first determine if file exists
+
     char response[BUF_SIZE];
-    snprintf(response, BUF_SIZE, "HTTP/1.0 200 OK\r\nContent-Type: unknown\r\nContent-Length: %lu\r\n\r\n%s\n", strlen(requested_file), requested_file);
-    int response_len = strlen(response);
-    if (send(client, response, response_len, 0) == -1) {
+    create_response(response, 200, "unknown", strlen(requested_file), requested_file);
+    if (send_response(client, response) == -1) {
         perror("GET response send error");
     }
-    log_to_stdout(response, response_len);
 }
 
 // determines the method of the request (eg. GET) and the requested file
@@ -54,6 +119,7 @@ void handle_request(int client, char* request, ssize_t request_size) {
         handle_GET(client, request_path);
     } else {
         // no other methods have been implemented
+        send_501(client);
     }
 }
 
@@ -101,12 +167,14 @@ int start_server(uint16_t port) {
     // now let's connect them together using bind
     if (bind(webserver, (struct sockaddr*) &server_address, sizeof(server_address)) == -1) {
         perror("Bind error");
+        return 1;
     }
     
     // have our webserver listen to up to 5 connections
     if (listen(webserver, 5) == -1) {
         perror("Listen error");
-    } 
+        return 1;
+    }
     
     serve(webserver);
 
@@ -125,7 +193,6 @@ int main(int argc, char const *argv[]) {
     printf("Running on http://127.0.0.1:%u/ (Press CTRL+C to quit)\n", port);
 
     if (start_server(port) != 0) {
-        perror("Server Error");
         exit(1);
     }
     return 0;
