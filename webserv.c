@@ -7,21 +7,33 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <signal.h>
 
 enum {
-    BUF_SIZE = 256  /* size to hold http requests and responses */
+    BUF_SIZE = 500,  /* size to hold http requests and responses */
+    LOGGING  = 1     /* if 1, log to terminal, if 0, turn off logging */
 };
+
+// write requests and responses to terminal
+void log_to_stdout(char* data, ssize_t data_size) {
+    if (LOGGING) {
+        write(1, data, data_size);
+    }
+}
 
 // all this does right now is send back the client's request
 int handle_request(int client, char* request, ssize_t request_size) {
     // must send a correctly formatted HTTP response or else the browser wont display
     char response[BUF_SIZE];
+    log_to_stdout(request, request_size);
+
     snprintf(response, BUF_SIZE, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %li\r\n\r\n", request_size);
     if (send(client, response, strlen(response), 0) == -1) {
         perror("Send error");
         return -1;
     }
+    
+    log_to_stdout(response, strlen(response));
+
     if (send(client, request, request_size, 0) == -1) {
         perror("Send error");
         return -1;
@@ -48,8 +60,7 @@ int serve(int server) {
         } else if (pid == 0) {
             char buf[BUF_SIZE];
             ssize_t n_read = recv(client_fd, buf, BUF_SIZE, 0);
-            int ret = handle_request(client_fd, buf, n_read);
-            printf("Request handled with return %d\n", ret);
+            handle_request(client_fd, buf, n_read);
             close(client_fd);
             exit(0); // terminate the child process
         } else {
@@ -94,9 +105,9 @@ int main(int argc, char const *argv[]) {
     if (argc != 2) {
         printf("Error: to start server use: $./webserv port-number\n");
         exit(1);
-    }
+    }   
     uint16_t port = (uint16_t) strtol(argv[1], NULL, 10);
-    printf("Starting server on port %u\n", port);
+    printf("Running on http://127.0.0.1:%u/ (Press CTRL+C to quit)\n", port);
 
     if (start_server(port) != 0) {
         perror("Server Error");
