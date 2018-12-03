@@ -43,10 +43,12 @@ void get_date(char* buf, int date_size) {
 }
 
 // code adapted from https://stackoverflow.com/a/5309508
+// if a file extension doesn't exist, return ""
 char* get_file_extension(char* filename) {
     char *dot = strrchr(filename, '.');
-    if (dot == NULL || dot == filename) 
-        return 0;
+    if (dot == NULL || dot == filename) {
+        return "";
+    }
     return dot + 1;
 }
 
@@ -128,11 +130,11 @@ void handle_dir(int client, char* dir_name) {
 
     // popen an ls -l process, read from the pipe and send it to the client
     // adapted from APUE book (pg 615-616)
-    FILE* fp;
-    char ls_entry[BUF_SIZE];
     char cmd[NAME_MAX];
     snprintf(cmd, NAME_MAX, "ls -l %s", dir_name); // format ls -l on dir_name
 
+    FILE* fp;
+    char ls_entry[BUF_SIZE];
     if ((fp = popen(cmd, "r")) == NULL) {
         perror("Popen ls -l error");
     } else {
@@ -189,11 +191,30 @@ void handle_img(int client, char* img_file, char* img_ext) {
 }
 
 // give the command to invoke the script (eg. python3.6, etc.)
-void handle_script(int client, char* script_file, char* command) {
+// does not handle cmd line arguments
+void handle_script(int client, char* script_file, const char* command) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    create_response(response, BUF_SIZE, 200, "text/plain");
+    send_response(client, response);
 
+    // format the script_cmd (eg. "python3.6 test.py")
+    char script_cmd[NAME_MAX];
+    snprintf(script_cmd, NAME_MAX, "%s %s", command, script_file);
+    
+    FILE* fp;
+    char script_output[BUF_SIZE];
+    if ((fp = popen(script_cmd, "r")) == NULL) {
+        perror("Popen script error");
+    } else {
+        // read a line from the script process and send it to the client
+        while (fgets(script_output, BUF_SIZE, fp) != NULL) {
+            send(client, script_output, strlen(script_output), 0);
+        }
+        pclose(fp);
+    }
 }
 
-// TODO: handle regular files
 // if file exists, it is either a directory or a regular file
 // if directory, call ls -l on it
 // if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
@@ -212,15 +233,15 @@ void handle_GET(int client, char* file_request) {
         /* handle regular file */
         if (has_extension(file_request, "html")) {
             handle_html(client, file_request);
-        } 
+        }
         else if (is_image(file_request)) {
             handle_img(client, file_request, get_file_extension(file_request));
-        } 
+        }
         else if (has_extension(file_request, "cgi")) {
             send_status(client, 501);
-        } 
+        }
         else if (has_extension(file_request, "py")) {
-            send_status(client, 501);
+            handle_script(client, file_request, PYTHON);
         } else {
             send_status(client, 501);
         }
