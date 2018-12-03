@@ -14,7 +14,8 @@
 
 /* webserv.c implements a simple HTTP 1.1 server 
 with short-lived connections using sockets 
-some code is sourced from the APUE textbook (3rd edition) 
+some code is sourced from the APUE textbook (3rd edition)
+other sources: https://www.jmarshall.com/easy/http/
 */
 
 enum {               /* constants */
@@ -23,8 +24,7 @@ enum {               /* constants */
     SMALL_BUF = 20   /* for things like method names, status messages, etc. */
 };
 
-static const char PYTHON[] = "python3.6"; /* set python version of scripts*/
-static const char ERR_404[] = "<h2>404 Not Found</h2>"; /* html 404 err msg */
+static const char ERR_404[] = "<h2>404 Not Found</h2>";       /* html 404 err msg */
 static const char ERR_501[] = "<h2>501 Not Implemented</h2>"; /* html 501 err msg */
 
 // log all requests and responses to terminal
@@ -190,21 +190,17 @@ void handle_img(int client, char* img_file, char* img_ext) {
     }
 }
 
-// give the command to invoke the script (eg. python3.6, etc.)
-// does not handle cmd line arguments
-void handle_script(int client, char* script_file, const char* command) {
+// cgi script must have execution permission (755) and 
+// have the right shebang (eg. #!/usr/bin/python)
+void handle_script(int client, char* script_file) {
     // send the initial response head
     char response[BUF_SIZE];
     create_response(response, BUF_SIZE, 200, "text/plain");
     send_response(client, response);
-
-    // format the script_cmd (eg. "python3.6 test.py")
-    char script_cmd[NAME_MAX];
-    snprintf(script_cmd, NAME_MAX, "%s %s", command, script_file);
     
     FILE* fp;
     char script_output[BUF_SIZE];
-    if ((fp = popen(script_cmd, "r")) == NULL) {
+    if ((fp = popen(script_file, "r")) == NULL) {
         perror("Popen script error");
     } else {
         // read a line from the script process and send it to the client
@@ -226,11 +222,11 @@ void handle_GET(int client, char* file_request) {
         send_status(client, 404);
     } 
     else if (S_ISDIR(sb.st_mode)) {
-        /* handle directory file */
+        /* handle directory files */
         handle_dir(client, file_request);
     } 
     else if (S_ISREG(sb.st_mode)) {
-        /* handle regular file */
+        /* handle regular files */
         if (has_extension(file_request, "html")) {
             handle_html(client, file_request);
         }
@@ -238,11 +234,9 @@ void handle_GET(int client, char* file_request) {
             handle_img(client, file_request, get_file_extension(file_request));
         }
         else if (has_extension(file_request, "cgi")) {
-            send_status(client, 501);
+            handle_script(client, file_request);
         }
-        else if (has_extension(file_request, "py")) {
-            handle_script(client, file_request, PYTHON);
-        } else {
+        else {
             send_status(client, 501);
         }
     } else {
