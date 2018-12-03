@@ -29,8 +29,7 @@ void log_to_stdout(char* data, ssize_t data_size) {
     }
 }
 
-// returns the current date like: Fri, 31 Dec 1999 23:59:59 GMT
-// for the HTTP date header
+// formats a date for the http header like: Fri, 31 Dec 1999 23:59:59 GMT
 // source: https://stackoverflow.com/a/7548846
 void get_date(char* buf, int date_size) {
     time_t now = time(0);
@@ -39,11 +38,30 @@ void get_date(char* buf, int date_size) {
 }
 
 // code adapted from https://stackoverflow.com/a/5309508
-char get_file_extension(char* filename) {
+char* get_file_extension(char* filename) {
     char *dot = strrchr(filename, '.');
     if (dot == NULL || dot == filename) 
         return 0;
-    return *(dot + 1);
+    return dot + 1;
+}
+
+// returns 1 if filename has extension ext, 0 otherwise
+int has_extension(char* filename, char* ext) {
+    if (strcmp(get_file_extension(filename), ext) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+int is_image(char* filename) {
+    if (has_extension(filename, "jpg")) {
+        return 1;
+    } else if (has_extension(filename, "jpeg")) {
+        return 1;
+    } else if (has_extension(filename, "gif")) {
+        return 1;
+    }
+    return 0;
 }
 
 /**
@@ -84,18 +102,18 @@ void send_response(int client, char* response) {
 
 // file not found error
 void send_404(int client) {
-    char* err_msg = "The requested item could not be found";
+    char* err_msg = "<h2>404 Not Found</h2>";
     char response[BUF_SIZE];
-    create_response(response, BUF_SIZE, 404, "text/plain");
+    create_response(response, BUF_SIZE, 404, "text/html");
     send_response(client, response);
     send(client, err_msg, strlen(err_msg), 0); // send the contents
 }
 
 // method not implemented error
 void send_501(int client) {
-    char* err_msg = "The requested item has no implementation for it";
+    char* err_msg = "<h2>501 Not Implemented</h2>";
     char response[BUF_SIZE];
-    create_response(response, BUF_SIZE, 501, "text/plain");
+    create_response(response, BUF_SIZE, 501, "text/html");
     send_response(client, response);
     send(client, err_msg, strlen(err_msg), 0); // send the contents
 }
@@ -125,29 +143,66 @@ void handle_dir(int client, char* dir_name) {
     }
 }
 
+// fopens an html file and sends it line by line to client
+void handle_html(int client, char* html_file) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    create_response(response, BUF_SIZE, 200, "text/html");
+    send_response(client, response);
+
+    FILE* fp;
+    char line[BUF_SIZE];
+
+    if ((fp = fopen(html_file, "r")) == NULL) {
+        perror("fopen html error");
+    } else {
+        // read a line from the html file and send it to the client
+        while (fgets(line, BUF_SIZE, fp) != NULL) {
+            send(client, line, strlen(line), 0);
+        }
+        fclose(fp);
+    }
+}
+
+void handle_img(int client, char* img_file) {
+    send_501(client);
+}
+
 // TODO: handle regular files
 // if file exists, it is either a directory or a regular file
 // if directory, call ls -l on it
 // if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
-void handle_GET(int client, char* requested_file) {
+void handle_GET(int client, char* file_request) {
     struct stat sb;
-    if (stat(requested_file, &sb) == -1) {
+    if (stat(file_request, &sb) == -1) {
         /* if stat fails, assume file doesn't exist */
         perror("stat");
         send_404(client);
-    } else if (S_ISDIR(sb.st_mode)) {
+    } 
+    else if (S_ISDIR(sb.st_mode)) {
         /* handle directory file */
-        handle_dir(client, requested_file);
-    } else if (S_ISREG(sb.st_mode)) {
+        handle_dir(client, file_request);
+    } 
+    else if (S_ISREG(sb.st_mode)) {
         /* handle regular file */
-        send_501(client);
+        if (has_extension(file_request, "html")) {
+            handle_html(client, file_request);
+        } 
+        else if (is_image(file_request)) {
+            handle_img(client, file_request);
+        } 
+        else if (has_extension(file_request, "cgi")) {
+            send_501(client);
+        } 
+        else if (has_extension(file_request, "py")) {
+            send_501(client);
+        } else {
+            send_501(client);
+        }
     } else {
         /* unknown file type */
         send_501(client);
     }
-
-    // if its a regular file, it is either a .html, .jpg/.jpeg/.gif, a .cgi, or a .py file
-    // it it's not one of those, return a 501 error
 }
 
 // determines the method of the request (eg. GET) and the requested file
