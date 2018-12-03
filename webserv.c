@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
@@ -21,6 +22,10 @@ enum {               /* constants */
     BUF_SIZE  = 500, /* size of buffer to hold http requests and responses */
     SMALL_BUF = 20   /* for things like method names, status messages, etc. */
 };
+
+static const char PYTHON[] = "python3.6"; /* set python version of scripts*/
+static const char ERR_404[] = "<h2>404 Not Found</h2>"; /* html 404 err msg */
+static const char ERR_501[] = "<h2>501 Not Implemented</h2>"; /* html 501 err msg */
 
 // log all requests and responses to terminal
 void log_to_stdout(char* data, ssize_t data_size) {
@@ -100,22 +105,18 @@ void send_response(int client, char* response) {
     }
 }
 
-// file not found error
-void send_404(int client) {
-    char* err_msg = "<h2>404 Not Found</h2>";
+void send_status(int client, int status_code) {
     char response[BUF_SIZE];
-    create_response(response, BUF_SIZE, 404, "text/html");
+    create_response(response, BUF_SIZE, status_code, "text/html");
     send_response(client, response);
-    send(client, err_msg, strlen(err_msg), 0); // send the contents
-}
 
-// method not implemented error
-void send_501(int client) {
-    char* err_msg = "<h2>501 Not Implemented</h2>";
-    char response[BUF_SIZE];
-    create_response(response, BUF_SIZE, 501, "text/html");
-    send_response(client, response);
-    send(client, err_msg, strlen(err_msg), 0); // send the contents
+    if (status_code == 404) {
+        /* file not found error */
+        send(client, ERR_404, sizeof(ERR_404), 0);
+    } else if (status_code == 501) {
+        /* method not implemented error */
+        send(client, ERR_501, sizeof(ERR_501), 0);
+    }
 }
 
 // lists a directory and sends it to the client
@@ -130,7 +131,7 @@ void handle_dir(int client, char* dir_name) {
     FILE* fp;
     char ls_entry[BUF_SIZE];
     char cmd[NAME_MAX];
-    sprintf(cmd, "ls -l %s", dir_name); // format ls -l on dir_name
+    snprintf(cmd, NAME_MAX, "ls -l %s", dir_name); // format ls -l on dir_name
 
     if ((fp = popen(cmd, "r")) == NULL) {
         perror("Popen ls -l error");
@@ -164,8 +165,32 @@ void handle_html(int client, char* html_file) {
     }
 }
 
-void handle_img(int client, char* img_file) {
-    send_501(client);
+// must provide the image extension (img_ext) to use (eg: "jpg")
+void handle_img(int client, char* img_file, char* img_ext) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    char content_type[SMALL_BUF]; // format the content with img_ext
+    snprintf(content_type, SMALL_BUF, "image/%s", img_ext);
+    create_response(response, BUF_SIZE, 200, content_type);
+    send_response(client, response);
+
+    int fd;
+    char buf[BUF_SIZE];
+    int n_read;
+    if ((fd = open(img_file, O_RDONLY)) == -1) {
+        perror("open image error");
+    } else {
+        // read from the image and write to the client
+        while ((n_read = read(fd, buf, BUF_SIZE)) > 0) {
+            send(client, buf, n_read, 0);
+        }
+        close(fd);
+    }
+}
+
+// give the command to invoke the script (eg. python3.6, etc.)
+void handle_script(int client, char* script_file, char* command) {
+
 }
 
 // TODO: handle regular files
@@ -177,7 +202,7 @@ void handle_GET(int client, char* file_request) {
     if (stat(file_request, &sb) == -1) {
         /* if stat fails, assume file doesn't exist */
         perror("stat");
-        send_404(client);
+        send_status(client, 404);
     } 
     else if (S_ISDIR(sb.st_mode)) {
         /* handle directory file */
@@ -189,19 +214,19 @@ void handle_GET(int client, char* file_request) {
             handle_html(client, file_request);
         } 
         else if (is_image(file_request)) {
-            handle_img(client, file_request);
+            handle_img(client, file_request, get_file_extension(file_request));
         } 
         else if (has_extension(file_request, "cgi")) {
-            send_501(client);
+            send_status(client, 501);
         } 
         else if (has_extension(file_request, "py")) {
-            send_501(client);
+            send_status(client, 501);
         } else {
-            send_501(client);
+            send_status(client, 501);
         }
     } else {
         /* unknown file type */
-        send_501(client);
+        send_status(client, 501);
     }
 }
 
@@ -219,14 +244,14 @@ void handle_request(int client, char* request, ssize_t request_size) {
 
     // add a "." before the requested path
     char relative_path[PATH_MAX];
-    sprintf(relative_path, ".%s", temp_path);
+    snprintf(relative_path, PATH_MAX, ".%s", temp_path);
 
     // deal with the request
     if (strcmp(method, "GET") == 0) {
         handle_GET(client, relative_path);
     } else {
         // no other methods have been implemented
-        send_501(client);
+        send_status(client, 501);
     }
 }
 
