@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <dirent.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -13,7 +12,9 @@
 #include <linux/limits.h>
 
 /* webserv.c implements a simple HTTP 1.1 server 
-with short-lived connections using sockets */
+with short-lived connections using sockets 
+some code is sourced from the APUE textbook (3rd edition) 
+*/
 
 enum {               /* constants */
     LOGGING   = 1,   /* if 1, log to terminal, if 0, turn off logging */
@@ -106,30 +107,29 @@ void handle_dir(int client, char* dir_name) {
     create_response(response, BUF_SIZE, 200, "text/plain");
     send_response(client, response);
 
-    DIR* current_dir;
-    struct dirent* contents;
-    current_dir = opendir(dir_name);
+    // popen an ls -l process, read from the pipe and send it to the client
+    // adapted from APUE book (pg 615-616)
+    FILE* fp;
+    char ls_entry[BUF_SIZE];
+    char cmd[NAME_MAX];
+    sprintf(cmd, "ls -l %s", dir_name); // format ls -l on dir_name
 
-    // loop through each file and send the name to the client
-    while((contents = readdir(current_dir)) != NULL) {
-        if (strcmp(contents->d_name, ".") == 0 || strcmp(contents->d_name, "..") == 0) {
-            /* ignore dot and dot dot */
-            continue;
+    if ((fp = popen(cmd, "r")) == NULL) {
+        perror("Popen ls -l error");
+    } else {
+        // read a line from the ls -l process and send it to the client
+        while (fgets(ls_entry, BUF_SIZE, fp) != NULL) {
+            send(client, ls_entry, strlen(ls_entry), 0);
         }
-
-        char filename[BUF_SIZE];
-        sprintf(filename, "%s\n", contents->d_name);
-        send(client, filename, strlen(filename), 0);
+        pclose(fp);
     }
-    closedir(current_dir);
 }
 
 // TODO: handle regular files
-// if file exists, it is either a dir. file or a reg. file, else send 404
-// if dir. file, call ls on it
+// if file exists, it is either a directory or a regular file
+// if directory, call ls -l on it
 // if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
 void handle_GET(int client, char* requested_file) {
-    // first determine if file exists
     struct stat sb;
     if (stat(requested_file, &sb) == -1) {
         /* if stat fails, assume file doesn't exist */
@@ -165,7 +165,6 @@ void handle_request(int client, char* request, ssize_t request_size) {
     // add a "." before the requested path
     char relative_path[PATH_MAX];
     sprintf(relative_path, ".%s", temp_path);
-    printf("requested path is now %s\n", relative_path);
 
     // deal with the request
     if (strcmp(method, "GET") == 0) {
@@ -188,7 +187,6 @@ int serve(int server) {
             perror("Accept error");
             exit(1);
         }
-
         // process the client's request by forking a child process
         if ((pid = fork()) < 0) {
             perror("fork error");
