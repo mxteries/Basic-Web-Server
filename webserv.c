@@ -3,19 +3,23 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <linux/limits.h>
 
 /* webserv.c implements a simple HTTP 1.1 server 
-with short-lived connections using sockets */
+with short-lived connections using sockets 
+some code is sourced from the APUE textbook (3rd edition) 
+*/
 
 enum {               /* constants */
     LOGGING   = 1,   /* if 1, log to terminal, if 0, turn off logging */
-    PATH_SIZE = 255, /* size of requested path */  
-    BUF_SIZE  = 500  /* size of buffer to hold http requests and responses */
+    BUF_SIZE  = 500, /* size of buffer to hold http requests and responses */
+    SMALL_BUF = 20   /* for things like method names, status messages, etc. */
 };
 
 // log all requests and responses to terminal
@@ -34,20 +38,27 @@ void get_date(char* buf, int date_size) {
     strftime(buf, date_size, "%a, %d %b %Y %H:%M:%S %Z", &tm);
 }
 
+// code adapted from https://stackoverflow.com/a/5309508
+char get_file_extension(char* filename) {
+    char *dot = strrchr(filename, '.');
+    if (dot == NULL || dot == filename) 
+        return 0;
+    return *(dot + 1);
+}
+
 /**
  * this function can be used to create and format an HTTP 1.1 response
+ * the content of the response must be sent separately
  * buf: response is stored in buf (size BUF_SIZE)
  * status: HTTP status code (eg. 200, 404, 501) 
  * type: content type (eg. text/plain)
- * len: content length (ie. size of body)
- * body: the content being requested
  */  
-void create_response(char* buf, int status, char* type, size_t len, char* body) {
+void create_response(char* buf, int size, int status, char* type) {
     char date[BUF_SIZE];
     get_date(date, BUF_SIZE);
 
-    // create a status message to go with the status code
-    char status_msg[20];
+    // assign a status message to go with the status code
+    char status_msg[SMALL_BUF];
     if (status == 200) {
         strcpy(status_msg, "OK");
     } else if (status == 404) {
@@ -58,48 +69,85 @@ void create_response(char* buf, int status, char* type, size_t len, char* body) 
         strcpy(status_msg, "Unknown");
     }
 
-    char* response = "HTTP/1.1 %d %s\r\nDate: %s\r\nConnection: close\r\nContent-Type: %s\r\nContent-Length: %lu\r\n\r\n%s\n\n";
-    snprintf(buf, BUF_SIZE, response, status, status_msg, date, type, len, body);
+    char* response = "HTTP/1.1 %d %s\r\nDate: %s\r\nConnection: close\r\nContent-Type: %s\r\n\r\n";
+    snprintf(buf, size, response, status, status_msg, date, type);
 }
 
-// log a response, and send it
-// returns -1 if send failed
-int send_response(int client, char* response) {
+// log a response, and send it to the client
+void send_response(int client, char* response) {
     int response_len = strlen(response);
     log_to_stdout(response, response_len);
-    return send(client, response, response_len, 0);
+    if (send(client, response, response_len, 0) == -1) {
+        perror("Send failed");
+    }
 }
 
 // file not found error
 void send_404(int client) {
     char* err_msg = "The requested item could not be found";
     char response[BUF_SIZE];
-    create_response(response, 404, "text/plain", strlen(err_msg), err_msg);
-    if (send_response(client, response) == -1) {
-        perror("404 send error");
-    }
+    create_response(response, BUF_SIZE, 404, "text/plain");
+    send_response(client, response);
+    send(client, err_msg, strlen(err_msg), 0); // send the contents
 }
 
 // method not implemented error
 void send_501(int client) {
-    char* err_msg = "The requested method has not implemented";
+    char* err_msg = "The requested item has no implementation for it";
     char response[BUF_SIZE];
-    create_response(response, 501, "text/plain", strlen(err_msg), err_msg);
-    if (send_response(client, response) == -1) {
-        perror("501 send error");
+    create_response(response, BUF_SIZE, 501, "text/plain");
+    send_response(client, response);
+    send(client, err_msg, strlen(err_msg), 0); // send the contents
+}
+
+// lists a directory and sends it to the client
+void handle_dir(int client, char* dir_name) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    create_response(response, BUF_SIZE, 200, "text/plain");
+    send_response(client, response);
+
+    // popen an ls -l process, read from the pipe and send it to the client
+    // adapted from APUE book (pg 615-616)
+    FILE* fp;
+    char ls_entry[BUF_SIZE];
+    char cmd[NAME_MAX];
+    sprintf(cmd, "ls -l %s", dir_name); // format ls -l on dir_name
+
+    if ((fp = popen(cmd, "r")) == NULL) {
+        perror("Popen ls -l error");
+    } else {
+        // read a line from the ls -l process and send it to the client
+        while (fgets(ls_entry, BUF_SIZE, fp) != NULL) {
+            send(client, ls_entry, strlen(ls_entry), 0);
+        }
+        pclose(fp);
     }
 }
 
-// all this does right now is send back the client's request
-// TODO: determine different content-types
+// TODO: handle regular files
+// if file exists, it is either a directory or a regular file
+// if directory, call ls -l on it
+// if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
 void handle_GET(int client, char* requested_file) {
-    // first determine if file exists
-
-    char response[BUF_SIZE];
-    create_response(response, 200, "unknown", strlen(requested_file), requested_file);
-    if (send_response(client, response) == -1) {
-        perror("GET response send error");
+    struct stat sb;
+    if (stat(requested_file, &sb) == -1) {
+        /* if stat fails, assume file doesn't exist */
+        perror("stat");
+        send_404(client);
+    } else if (S_ISDIR(sb.st_mode)) {
+        /* handle directory file */
+        handle_dir(client, requested_file);
+    } else if (S_ISREG(sb.st_mode)) {
+        /* handle regular file */
+        send_501(client);
+    } else {
+        /* unknown file type */
+        send_501(client);
     }
+
+    // if its a regular file, it is either a .html, .jpg/.jpeg/.gif, a .cgi, or a .py file
+    // it it's not one of those, return a 501 error
 }
 
 // determines the method of the request (eg. GET) and the requested file
@@ -108,22 +156,27 @@ void handle_request(int client, char* request, ssize_t request_size) {
     log_to_stdout(request, request_size);
 
     // parse the request by getting the first and second word
-    char method[10];
-    char request_path[PATH_SIZE];
-    if (sscanf(request, "%s %s", method, request_path) < 2) {
+    char method[SMALL_BUF];
+    char temp_path[PATH_MAX];
+    if (sscanf(request, "%s %s", method, temp_path) < 2) {
         perror("Parsing request failed");
     }
 
+    // add a "." before the requested path
+    char relative_path[PATH_MAX];
+    sprintf(relative_path, ".%s", temp_path);
+
     // deal with the request
     if (strcmp(method, "GET") == 0) {
-        handle_GET(client, request_path);
+        handle_GET(client, relative_path);
     } else {
         // no other methods have been implemented
         send_501(client);
     }
 }
 
-// code adapted from APUE textbook (pg 615)
+// code adapted from APUE textbook (pg 617-618)
+// accept connections and fork a child process to serve requests
 int serve(int server) {
     int client_fd, status;
     pid_t pid;
@@ -134,10 +187,10 @@ int serve(int server) {
             perror("Accept error");
             exit(1);
         }
-
         // process the client's request by forking a child process
         if ((pid = fork()) < 0) {
             perror("fork error");
+            exit(1);
         } else if (pid == 0) {
             char buf[BUF_SIZE];
             ssize_t n_read = recv(client_fd, buf, BUF_SIZE, 0);
@@ -163,8 +216,7 @@ int start_server(uint16_t port) {
     server_address.sin_port = htons(port);
     server_address.sin_addr.s_addr = INADDR_ANY;
 
-    // we defined an address for our webserver, 
-    // now let's connect them together using bind
+    // connect address and webserver together using bind
     if (bind(webserver, (struct sockaddr*) &server_address, sizeof(server_address)) == -1) {
         perror("Bind error");
         return 1;
