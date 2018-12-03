@@ -10,14 +10,15 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <linux/limits.h>
 
 /* webserv.c implements a simple HTTP 1.1 server 
 with short-lived connections using sockets */
 
 enum {               /* constants */
     LOGGING   = 1,   /* if 1, log to terminal, if 0, turn off logging */
-    PATH_SIZE = 255, /* size of requested path */  
-    BUF_SIZE  = 500  /* size of buffer to hold http requests and responses */
+    BUF_SIZE  = 500, /* size of buffer to hold http requests and responses */
+    SMALL_BUF = 20   /* for things like method names, status messages, etc. */
 };
 
 // log all requests and responses to terminal
@@ -36,20 +37,27 @@ void get_date(char* buf, int date_size) {
     strftime(buf, date_size, "%a, %d %b %Y %H:%M:%S %Z", &tm);
 }
 
+// code adapted from https://stackoverflow.com/a/5309508
+char get_file_extension(char* filename) {
+    char *dot = strrchr(filename, '.');
+    if (dot == NULL || dot == filename) 
+        return 0;
+    return *(dot + 1);
+}
+
 /**
  * this function can be used to create and format an HTTP 1.1 response
+ * the content of the response must be sent separately
  * buf: response is stored in buf (size BUF_SIZE)
  * status: HTTP status code (eg. 200, 404, 501) 
  * type: content type (eg. text/plain)
- * len: content length (ie. size of body)
- * body: the content being requested
  */  
-void create_response(char* buf, int status, char* type, char* body) {
+void create_response(char* buf, int size, int status, char* type) {
     char date[BUF_SIZE];
     get_date(date, BUF_SIZE);
 
-    // create a status message to go with the status code
-    char status_msg[20];
+    // assign a status message to go with the status code
+    char status_msg[SMALL_BUF];
     if (status == 200) {
         strcpy(status_msg, "OK");
     } else if (status == 404) {
@@ -60,46 +68,63 @@ void create_response(char* buf, int status, char* type, char* body) {
         strcpy(status_msg, "Unknown");
     }
 
-    char* response = "HTTP/1.1 %d %s\r\nDate: %s\r\nConnection: close\r\nContent-Type: %s\r\n\r\n%s\n\n";
-    snprintf(buf, BUF_SIZE, response, status, status_msg, date, type, body);
+    char* response = "HTTP/1.1 %d %s\r\nDate: %s\r\nConnection: close\r\nContent-Type: %s\r\n\r\n";
+    snprintf(buf, size, response, status, status_msg, date, type);
 }
 
-// log a response, and send it
-// returns -1 if send failed
-int send_response(int client, char* response) {
+// log a response, and send it to the client
+void send_response(int client, char* response) {
     int response_len = strlen(response);
     log_to_stdout(response, response_len);
-    return send(client, response, response_len, 0);
+    if (send(client, response, response_len, 0) == -1) {
+        perror("Send failed");
+    }
 }
 
 // file not found error
 void send_404(int client) {
     char* err_msg = "The requested item could not be found";
     char response[BUF_SIZE];
-    create_response(response, 404, "text/plain", err_msg);
-    if (send_response(client, response) == -1) {
-        perror("404 send error");
-    }
+    create_response(response, BUF_SIZE, 404, "text/plain");
+    send_response(client, response);
+    send(client, err_msg, strlen(err_msg), 0); // send the contents
 }
 
 // method not implemented error
 void send_501(int client) {
-    char* err_msg = "The requested method has not implemented";
+    char* err_msg = "The requested item has no implementation for it";
     char response[BUF_SIZE];
-    create_response(response, 501, "text/plain", err_msg);
-    if (send_response(client, response) == -1) {
-        perror("501 send error");
+    create_response(response, BUF_SIZE, 501, "text/plain");
+    send_response(client, response);
+    send(client, err_msg, strlen(err_msg), 0); // send the contents
+}
+
+// lists a directory and sends it to the client
+void handle_dir(int client, char* dir_name) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    create_response(response, BUF_SIZE, 200, "text/plain");
+    send_response(client, response);
+
+    DIR* current_dir;
+    struct dirent* contents;
+    current_dir = opendir(dir_name);
+
+    // loop through each file and send the name to the client
+    while((contents = readdir(current_dir)) != NULL) {
+        if (strcmp(contents->d_name, ".") == 0 || strcmp(contents->d_name, "..") == 0) {
+            /* ignore dot and dot dot */
+            continue;
+        }
+
+        char filename[BUF_SIZE];
+        sprintf(filename, "%s\n", contents->d_name);
+        send(client, filename, strlen(filename), 0);
     }
+    closedir(current_dir);
 }
 
-// code adapted from https://stackoverflow.com/a/5309508
-char get_file_extension(char* filename) {
-    char *dot = strrchr(filename, '.');
-    if (dot == NULL || dot == filename) 
-        return 0;
-    return *(dot + 1);
-}
-
+// TODO: handle regular files
 // if file exists, it is either a dir. file or a reg. file, else send 404
 // if dir. file, call ls on it
 // if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
@@ -111,13 +136,11 @@ void handle_GET(int client, char* requested_file) {
         perror("stat");
         send_404(client);
     } else if (S_ISDIR(sb.st_mode)) {
-        send_501(client);
+        /* handle directory file */
+        handle_dir(client, requested_file);
     } else if (S_ISREG(sb.st_mode)) {
-        char response[BUF_SIZE];
-        create_response(response, 200, "unknown", requested_file);
-        if (send_response(client, response) == -1) {
-            perror("GET response send error");
-        }
+        /* handle regular file */
+        send_501(client);
     } else {
         /* unknown file type */
         send_501(client);
@@ -133,15 +156,20 @@ void handle_request(int client, char* request, ssize_t request_size) {
     log_to_stdout(request, request_size);
 
     // parse the request by getting the first and second word
-    char method[10];
-    char request_path[PATH_SIZE];
-    if (sscanf(request, "%s %s", method, request_path) < 2) {
+    char method[SMALL_BUF];
+    char temp_path[PATH_MAX];
+    if (sscanf(request, "%s %s", method, temp_path) < 2) {
         perror("Parsing request failed");
     }
 
+    // add a "." before the requested path
+    char relative_path[PATH_MAX];
+    sprintf(relative_path, ".%s", temp_path);
+    printf("requested path is now %s\n", relative_path);
+
     // deal with the request
     if (strcmp(method, "GET") == 0) {
-        handle_GET(client, request_path);
+        handle_GET(client, relative_path);
     } else {
         // no other methods have been implemented
         send_501(client);
@@ -149,6 +177,7 @@ void handle_request(int client, char* request, ssize_t request_size) {
 }
 
 // code adapted from APUE textbook (pg 617-618)
+// accept connections and fork a child process to serve requests
 int serve(int server) {
     int client_fd, status;
     pid_t pid;
