@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
@@ -13,7 +14,8 @@
 
 /* webserv.c implements a simple HTTP 1.1 server 
 with short-lived connections using sockets 
-some code is sourced from the APUE textbook (3rd edition) 
+some code is sourced from the APUE textbook (3rd edition)
+other sources: https://www.jmarshall.com/easy/http/
 */
 
 enum {               /* constants */
@@ -22,6 +24,9 @@ enum {               /* constants */
     SMALL_BUF = 20   /* for things like method names, status messages, etc. */
 };
 
+static const char ERR_404[] = "<h2>404 Not Found</h2>";       /* html 404 err msg */
+static const char ERR_501[] = "<h2>501 Not Implemented</h2>"; /* html 501 err msg */
+
 // log all requests and responses to terminal
 void log_to_stdout(char* data, ssize_t data_size) {
     if (LOGGING) {
@@ -29,8 +34,7 @@ void log_to_stdout(char* data, ssize_t data_size) {
     }
 }
 
-// returns the current date like: Fri, 31 Dec 1999 23:59:59 GMT
-// for the HTTP date header
+// formats a date for the http header like: Fri, 31 Dec 1999 23:59:59 GMT
 // source: https://stackoverflow.com/a/7548846
 void get_date(char* buf, int date_size) {
     time_t now = time(0);
@@ -39,11 +43,32 @@ void get_date(char* buf, int date_size) {
 }
 
 // code adapted from https://stackoverflow.com/a/5309508
-char get_file_extension(char* filename) {
+// if a file extension doesn't exist, return ""
+char* get_file_extension(char* filename) {
     char *dot = strrchr(filename, '.');
-    if (dot == NULL || dot == filename) 
-        return 0;
-    return *(dot + 1);
+    if (dot == NULL || dot == filename) {
+        return "";
+    }
+    return dot + 1;
+}
+
+// returns 1 if filename has extension ext, 0 otherwise
+int has_extension(char* filename, char* ext) {
+    if (strcmp(get_file_extension(filename), ext) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+int is_image(char* filename) {
+    if (has_extension(filename, "jpg")) {
+        return 1;
+    } else if (has_extension(filename, "jpeg")) {
+        return 1;
+    } else if (has_extension(filename, "gif")) {
+        return 1;
+    }
+    return 0;
 }
 
 /**
@@ -82,22 +107,18 @@ void send_response(int client, char* response) {
     }
 }
 
-// file not found error
-void send_404(int client) {
-    char* err_msg = "The requested item could not be found";
+void send_status(int client, int status_code) {
     char response[BUF_SIZE];
-    create_response(response, BUF_SIZE, 404, "text/plain");
+    create_response(response, BUF_SIZE, status_code, "text/html");
     send_response(client, response);
-    send(client, err_msg, strlen(err_msg), 0); // send the contents
-}
 
-// method not implemented error
-void send_501(int client) {
-    char* err_msg = "The requested item has no implementation for it";
-    char response[BUF_SIZE];
-    create_response(response, BUF_SIZE, 501, "text/plain");
-    send_response(client, response);
-    send(client, err_msg, strlen(err_msg), 0); // send the contents
+    if (status_code == 404) {
+        /* file not found error */
+        send(client, ERR_404, sizeof(ERR_404), 0);
+    } else if (status_code == 501) {
+        /* method not implemented error */
+        send(client, ERR_501, sizeof(ERR_501), 0);
+    }
 }
 
 // lists a directory and sends it to the client
@@ -109,11 +130,11 @@ void handle_dir(int client, char* dir_name) {
 
     // popen an ls -l process, read from the pipe and send it to the client
     // adapted from APUE book (pg 615-616)
+    char cmd[NAME_MAX];
+    snprintf(cmd, NAME_MAX, "ls -l %s", dir_name); // format ls -l on dir_name
+
     FILE* fp;
     char ls_entry[BUF_SIZE];
-    char cmd[NAME_MAX];
-    sprintf(cmd, "ls -l %s", dir_name); // format ls -l on dir_name
-
     if ((fp = popen(cmd, "r")) == NULL) {
         perror("Popen ls -l error");
     } else {
@@ -125,29 +146,103 @@ void handle_dir(int client, char* dir_name) {
     }
 }
 
-// TODO: handle regular files
+// fopens an html file and sends it line by line to client
+void handle_html(int client, char* html_file) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    create_response(response, BUF_SIZE, 200, "text/html");
+    send_response(client, response);
+
+    FILE* fp;
+    char line[BUF_SIZE];
+
+    if ((fp = fopen(html_file, "r")) == NULL) {
+        perror("fopen html error");
+    } else {
+        // read a line from the html file and send it to the client
+        while (fgets(line, BUF_SIZE, fp) != NULL) {
+            send(client, line, strlen(line), 0);
+        }
+        fclose(fp);
+    }
+}
+
+// must provide the image extension (img_ext) to use (eg: "jpg")
+void handle_img(int client, char* img_file, char* img_ext) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    char content_type[SMALL_BUF]; // format the content with img_ext
+    snprintf(content_type, SMALL_BUF, "image/%s", img_ext);
+    create_response(response, BUF_SIZE, 200, content_type);
+    send_response(client, response);
+
+    int fd;
+    char buf[BUF_SIZE];
+    int n_read;
+    if ((fd = open(img_file, O_RDONLY)) == -1) {
+        perror("open image error");
+    } else {
+        // read from the image and write to the client
+        while ((n_read = read(fd, buf, BUF_SIZE)) > 0) {
+            send(client, buf, n_read, 0);
+        }
+        close(fd);
+    }
+}
+
+// cgi script must have execution permission (755) and 
+// have the right shebang (eg. #!/usr/bin/python)
+void handle_script(int client, char* script_file) {
+    // send the initial response head
+    char response[BUF_SIZE];
+    create_response(response, BUF_SIZE, 200, "text/plain");
+    send_response(client, response);
+    
+    FILE* fp;
+    char script_output[BUF_SIZE];
+    if ((fp = popen(script_file, "r")) == NULL) {
+        perror("Popen script error");
+    } else {
+        // read a line from the script process and send it to the client
+        while (fgets(script_output, BUF_SIZE, fp) != NULL) {
+            send(client, script_output, strlen(script_output), 0);
+        }
+        pclose(fp);
+    }
+}
+
 // if file exists, it is either a directory or a regular file
 // if directory, call ls -l on it
 // if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
-void handle_GET(int client, char* requested_file) {
+void handle_GET(int client, char* file_request) {
     struct stat sb;
-    if (stat(requested_file, &sb) == -1) {
+    if (stat(file_request, &sb) == -1) {
         /* if stat fails, assume file doesn't exist */
         perror("stat");
-        send_404(client);
-    } else if (S_ISDIR(sb.st_mode)) {
-        /* handle directory file */
-        handle_dir(client, requested_file);
-    } else if (S_ISREG(sb.st_mode)) {
-        /* handle regular file */
-        send_501(client);
+        send_status(client, 404);
+    } 
+    else if (S_ISDIR(sb.st_mode)) {
+        /* handle directory files */
+        handle_dir(client, file_request);
+    } 
+    else if (S_ISREG(sb.st_mode)) {
+        /* handle regular files */
+        if (has_extension(file_request, "html")) {
+            handle_html(client, file_request);
+        }
+        else if (is_image(file_request)) {
+            handle_img(client, file_request, get_file_extension(file_request));
+        }
+        else if (has_extension(file_request, "cgi")) {
+            handle_script(client, file_request);
+        }
+        else {
+            send_status(client, 501);
+        }
     } else {
         /* unknown file type */
-        send_501(client);
+        send_status(client, 501);
     }
-
-    // if its a regular file, it is either a .html, .jpg/.jpeg/.gif, a .cgi, or a .py file
-    // it it's not one of those, return a 501 error
 }
 
 // determines the method of the request (eg. GET) and the requested file
@@ -164,14 +259,14 @@ void handle_request(int client, char* request, ssize_t request_size) {
 
     // add a "." before the requested path
     char relative_path[PATH_MAX];
-    sprintf(relative_path, ".%s", temp_path);
+    snprintf(relative_path, PATH_MAX, ".%s", temp_path);
 
     // deal with the request
     if (strcmp(method, "GET") == 0) {
         handle_GET(client, relative_path);
     } else {
         // no other methods have been implemented
-        send_501(client);
+        send_status(client, 501);
     }
 }
 
