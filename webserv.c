@@ -67,6 +67,8 @@ int is_image(char* filename) {
         return 1;
     } else if (has_extension(filename, "gif")) {
         return 1;
+    } else if (has_extension(filename, "png")) {
+        return 1;
     }
     return 0;
 }
