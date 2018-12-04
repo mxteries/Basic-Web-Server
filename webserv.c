@@ -20,6 +20,7 @@ other sources: https://www.jmarshall.com/easy/http/
 
 enum {               /* constants */
     LOGGING   = 1,   /* if 1, log to terminal, if 0, turn off logging */
+    BACKLOG   = 5,   /* number of connections specified in listen() */
     BUF_SIZE  = 500, /* size of buffer to hold http requests and responses */
     SMALL_BUF = 20   /* for things like method names, status messages, etc. */
 };
@@ -194,10 +195,16 @@ void handle_img(int client, char* img_file, char* img_ext) {
 
 // cgi script must have execution permission (755) and 
 // have the right shebang (eg. #!/usr/bin/python)
+// does not handle query strings in url (eg. /test.cgi?key1=val1)
+//      todo: https://stackoverflow.com/a/41286870/10634812
 void handle_script(int client, char* script_file) {
-    // send the initial response head
+    // send the initial response head, without the content type
+    char date[BUF_SIZE];
+    get_date(date, BUF_SIZE);
     char response[BUF_SIZE];
-    create_response(response, BUF_SIZE, 200, "text/plain");
+    char* response_text = "HTTP/1.1 %d %s\r\nDate: %s\r\nConnection: close\r\n";
+    snprintf(response, BUF_SIZE, response_text, 200, "OK", date);
+
     send_response(client, response);
     
     FILE* fp;
@@ -320,7 +327,7 @@ int start_server(uint16_t port) {
     }
     
     // have our webserver listen to up to 5 connections
-    if (listen(webserver, 5) == -1) {
+    if (listen(webserver, BACKLOG) == -1) {
         perror("Listen error");
         return 1;
     }
