@@ -74,6 +74,24 @@ int is_image(char* filename) {
     return 0;
 }
 
+// returns 1 if filename has a cgi extension, 0 otherwise
+// a separate method is needed because filename could have
+// query parameters (eg: ./temp.cgi?test=value1)
+int is_cgi(char* filename) {
+    char ext[20];
+    char* full_extension = get_file_extension(filename);
+    if (strlen(full_extension) < 3) {
+        return 0;
+    } else {
+        // get the next 3 letters after the dot, store in ext
+        sprintf(ext, "%.*s", 3, full_extension);
+        if (strcmp(ext, "cgi") == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /**
  * this function can be used to create and format an HTTP 1.1 response
  * the content of the response must be sent separately
@@ -195,18 +213,20 @@ void handle_img(int client, char* img_file, char* img_ext) {
 
 // cgi script must have execution permission (755) and 
 // have the right shebang (eg. #!/usr/bin/python)
-// does not handle query strings in url (eg. /test.cgi?key1=val1)
-//      todo: https://stackoverflow.com/a/41286870/10634812
-void handle_script(int client, char* script_file) {
+void handle_script(int client, char* script_file, char* query_str) {
     // send the initial response head, without the content type
     char date[BUF_SIZE];
     get_date(date, BUF_SIZE);
     char response[BUF_SIZE];
     char* response_text = "HTTP/1.1 %d %s\r\nDate: %s\r\nConnection: close\r\n";
     snprintf(response, BUF_SIZE, response_text, 200, "OK", date);
-
     send_response(client, response);
-    
+
+    // set QUERY_STRING so that our cgi script can access query_str
+    if (setenv("QUERY_STRING", query_str, 1) == -1) {
+        perror("QUERY_STRING set_env error");
+    }
+    system("echo $QUERY_STRING");
     FILE* fp;
     char script_output[BUF_SIZE];
     if ((fp = popen(script_file, "r")) == NULL) {
@@ -218,12 +238,13 @@ void handle_script(int client, char* script_file) {
         }
         pclose(fp);
     }
+    unsetenv("QUERY_STRING");
 }
 
 // if file exists, it is either a directory or a regular file
 // if directory, call ls -l on it
 // if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
-void handle_GET(int client, char* file_request) {
+void handle_GET(int client, char* file_request, char* query_string) {
     struct stat sb;
     if (stat(file_request, &sb) == -1) {
         /* if stat fails, assume file doesn't exist */
@@ -242,8 +263,8 @@ void handle_GET(int client, char* file_request) {
         else if (is_image(file_request)) {
             handle_img(client, file_request, get_file_extension(file_request));
         }
-        else if (has_extension(file_request, "cgi")) {
-            handle_script(client, file_request);
+        else if (is_cgi(file_request)) {
+            handle_script(client, file_request, query_string);
         }
         else {
             send_status(client, 501);
@@ -251,6 +272,17 @@ void handle_GET(int client, char* file_request) {
     } else {
         /* unknown file type */
         send_status(client, 501);
+    }
+}
+
+// given "/some/file/path?query=value&query2=value2"
+// return "?query=value&query2=value2" or "" if no query exists
+char* parse_query(char* requested_path) {
+    char* query_ptr = strchr(requested_path, '?');
+    if (query_ptr == NULL) {
+        return "";
+    } else {
+        return query_ptr;
     }
 }
 
@@ -266,13 +298,26 @@ void handle_request(int client, char* request, ssize_t request_size) {
         perror("Parsing request failed");
     }
 
+    printf("temp path is: %s.\n", temp_path);
+
+    // search for a query string inside the GET path (temp_path)
+    // if one exists, remove it from temp_path
+    char* query_ptr = parse_query(temp_path);
+    if (strcmp(query_ptr, "") != 0) {
+        int index = query_ptr - temp_path; // the starting index of the query
+        temp_path[index] = '\0';
+        query_ptr += 1;
+    }
+
+    printf("temp path is now: %s, and query is %s.\n", temp_path, query_ptr);
+
     // add a "." before the requested path
     char relative_path[PATH_MAX];
     snprintf(relative_path, PATH_MAX, ".%s", temp_path);
 
     // deal with the request
     if (strcmp(method, "GET") == 0) {
-        handle_GET(client, relative_path);
+        handle_GET(client, relative_path, query_ptr);
     } else {
         // no other methods have been implemented
         send_status(client, 501);
