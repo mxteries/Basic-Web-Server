@@ -214,7 +214,7 @@ void handle_img(int client, char* img_file, char* img_ext) {
 // cgi script must have execution permission (755) and 
 // have the right shebang (eg. #!/usr/bin/python)
 void handle_script(int client, char* script_file, char* query_str) {
-    // send the initial response head, without the content type
+    // send the initial response head, without the content type (sent by cgi)
     char date[BUF_SIZE];
     get_date(date, BUF_SIZE);
     char response[BUF_SIZE];
@@ -288,9 +288,7 @@ char* parse_query(char* requested_path) {
 
 // determines the method of the request (eg. GET) and the requested file
 // then calls the appropriate function to deal with the request
-void handle_request(int client, char* request, ssize_t request_size) {
-    log_to_stdout(request, request_size);
-
+void handle_request(int client, char* request) {
     // parse the request by getting the first and second word
     char method[SMALL_BUF];
     char temp_path[PATH_MAX];
@@ -341,9 +339,11 @@ int serve(int server) {
             perror("fork error");
             exit(1);
         } else if (pid == 0) {
+            close(server);
             char buf[BUF_SIZE];
             ssize_t n_read = recv(client_fd, buf, BUF_SIZE, 0);
-            handle_request(client_fd, buf, n_read);
+            log_to_stdout(buf, n_read);
+            handle_request(client_fd, buf);
             close(client_fd);
             exit(0); // terminate the child process
         } else {
@@ -371,7 +371,7 @@ int start_server(uint16_t port) {
         return 1;
     }
     
-    // have our webserver listen to up to 5 connections
+    // have our webserver listen to up to BACKLOG connections
     if (listen(webserver, BACKLOG) == -1) {
         perror("Listen error");
         return 1;
