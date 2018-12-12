@@ -1,4 +1,3 @@
-
 all: webserv security
 clean:
 	-rm -f webserv security data.csv histogram.png
