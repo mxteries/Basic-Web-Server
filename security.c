@@ -56,6 +56,9 @@ int main(int argc, char** argv){
             // Put code here to update website!
             read(uart, buffer, sizeof(buffer));
             printf("%s", buffer);
+            if (strcmp(buffer, "breach") == 0) {
+                printf("Alert! Your security system has been breached!");
+            }
             memset(buffer, 0, sizeof(buffer));
         }
         // Connection is closed/lost, close the file and exit
