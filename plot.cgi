@@ -2,8 +2,16 @@
 import cgi
 import cgitb; cgitb.enable()  # for troubleshooting
 import os
+import sys
+
 print("Content-type: text/html\r\n\r")
 arguments = cgi.FieldStorage()
+
+if ("directory" not in arguments):
+	print("<H1>Error</H1>")
+	print("Usage: /plot.cgi?directory=directory name here")
+	sys.exit()
+
 dirname = arguments["directory"].value
 
 pid = os.fork()

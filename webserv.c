@@ -11,7 +11,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <linux/limits.h>
-#include <stdbool.h>
+
 /* webserv.c implements a simple HTTP 1.1 server 
 with short-lived connections using sockets 
 some code is sourced from the APUE textbook (3rd edition)
@@ -241,23 +241,25 @@ void handle_script(int client, char* script_file, char* query_str) {
     unsetenv("QUERY_STRING");
 }
 
+// handles the url "/security"
 void handle_security(int client, char* query_str) {
     handle_html(client, "security-page.html");
-    bool monitoring = strtok(query_str, "=");
-    if (monitoring == true) {
+    if (strstr(query_str, "true") != NULL) {
         FILE* fp;
         char script_output[BUF_SIZE];
         if ((fp = popen("./security", "r")) == NULL) {
             perror("Popen script error");
         } else {
             // read a line from the script process and send it to the client
+            send(client, "<p>", 3, 0);
             while (fgets(script_output, BUF_SIZE, fp) != NULL) {
                 send(client, script_output, strlen(script_output), 0);
             }
             pclose(fp);
+
+            send(client, "</p>", 4, 0);
         }
     }
-    printf("%s", query_str);
 }
 
 // if file exists, it is either a directory or a regular file
