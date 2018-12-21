@@ -10,6 +10,12 @@
     <h1>Welcome to your home security page</h1>
     <form action="/security" method="get">
         <input type="hidden" name="Monitoring" value="true" />
+        <select name="monitor_distance">
+            <option value="5">5cm</option>
+            <option value="10">10cm</option>
+            <option value="20">20cm</option>
+            <option value="40">40cm</option>
+          </select>
         <input type="submit" value="Start Monitoring" />
     </form>
 </body>

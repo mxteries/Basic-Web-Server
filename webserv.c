@@ -315,6 +315,17 @@ void handle_security(int client, char* query_str) {
         }
         printf("Connection Confirmed\n");
 
+        const char delim[2] = "=";
+        char *distance;
+        
+        /* get the first token */
+        distance = strtok(query_str, delim);
+        distance = strtok(NULL, delim);
+        distance = strtok(NULL, delim);
+        /* walk through other tokens */
+        printf("distance: %s.\n",distance);
+        //write(uart, distance, strlen(distance));
+
         char buffer[1024];
         memset(buffer, 0, sizeof(buffer));
         while (1){

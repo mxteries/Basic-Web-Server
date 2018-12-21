@@ -4,6 +4,7 @@
 
 //for noise
 #define buzzer 13
+int incomingByte = 0;
 int TOOCLOSE = 4;
 int TOOFAR = 400;
 long duration;
@@ -22,6 +23,14 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
+    incomingByte = Serial.read();
+    // say what you got:
+    Serial.print("I received: ");
+    Serial.println(incomingByte);
+    if (incomingByte != -1) {
+      TOOCLOSE = incomingByte; 
+    }
+  
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
 
@@ -61,4 +70,3 @@ void loop() {
   }
   delay(100);
   }  
-
