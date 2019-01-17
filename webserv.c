@@ -11,8 +11,6 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <limits.h>
-#include <termios.h>
-#include "my_threads.h"
 
 /* webserv.c implements a simple HTTP 1.1 server 
 with short-lived connections using sockets 
@@ -29,6 +27,9 @@ enum {               /* constants */
 
 static const char ERR_404[] = "<h2>404 Not Found</h2>";       /* html 404 err msg */
 static const char ERR_501[] = "<h2>501 Not Implemented</h2>"; /* html 501 err msg */
+static const char HTTP_200[] = "OK";
+static const char HTTP_404[] = "Not Found";
+static const char HTTP_501[] = "Not Implemented";
 
 // log all requests and responses to terminal
 void log_to_stdout(char* data, ssize_t data_size) {
@@ -36,67 +37,6 @@ void log_to_stdout(char* data, ssize_t data_size) {
         write(STDOUT_FILENO, data, data_size);
     }
 }
-
-int uart_open(char* path, speed_t baud){
-    struct termios uart_opts;
-    int fd = open(path, O_RDWR | O_NOCTTY | O_NDELAY);
-    // Flush data already in/out
-    if (tcflush(fd,TCIFLUSH)==-1)
-        goto err;
-    if (tcflush(fd,TCOFLUSH)==-1)
-        goto err;
-    // Setup modes (8-bit data, disable control signals, readable, no-parity)
-    uart_opts.c_cflag = CS8 | CLOCAL | CREAD;    // control modes
-    uart_opts.c_iflag=IGNPAR;                           // input modes
-    uart_opts.c_oflag=0;                                // output modes
-    uart_opts.c_lflag=0;                                // local modes
-    // Setup input buffer options: Minimum input: 1byte, no-delay
-    uart_opts.c_cc[VMIN]=1;
-    uart_opts.c_cc[VTIME]=0;
-    // Set baud rate
-    cfsetospeed(&uart_opts,baud);
-    cfsetispeed(&uart_opts,baud);
-    // Apply the settings
-    if (tcsetattr(fd,TCSANOW,&uart_opts)==-1)
-        goto err;
-    
-    return fd;
-    
-err:
-    close(fd);
-    return -1;
-}
-
-int uart_read(int argc, char** argv){
-    char buffer[1024];
-    int uart;
-    
-    if(argc < 2){
-        printf("Usage: serial-dev-path");
-        return EXIT_SUCCESS;
-    }
-    printf("Setting up\n");
-        uart = uart_open(argv[1], B57600);
-        if(uart < 0){
-            printf("Error: COuld not open %s\n", argv[1]);
-            return EXIT_FAILURE;
-        }
-    printf("Connection Confirmed\n");
-        memset(buffer, 0, sizeof(buffer));
-        while (1){
-            // Put code here to update website!
-            read(uart, buffer, sizeof(buffer));
-            printf("%s", buffer);
-            if (strcmp(buffer, "breach") == 0) {
-                printf("Alert! Your security system has been breached!");
-            }
-            memset(buffer, 0, sizeof(buffer));
-        }
-        // Connection is closed/lost, close the file and exit
-        close(uart);
-        return EXIT_SUCCESS;
-        
-    }
 
 // formats a date for the http header like: Fri, 31 Dec 1999 23:59:59 GMT
 // source: https://stackoverflow.com/a/7548846
@@ -169,11 +109,11 @@ void create_response(char* buf, int size, int status, char* type) {
     // assign a status message to go with the status code
     char status_msg[SMALL_BUF];
     if (status == 200) {
-        strcpy(status_msg, "OK");
+        strcpy(status_msg, HTTP_200);
     } else if (status == 404) {
-        strcpy(status_msg, "Not Found");
+        strcpy(status_msg, HTTP_404);
     } else if (status == 501) {
-        strcpy(status_msg, "Not Implemented");
+        strcpy(status_msg, HTTP_501);
     } else {
         strcpy(status_msg, "Unknown");
     }
@@ -191,6 +131,7 @@ void send_response(int client, char* response) {
     }
 }
 
+// used to send an error page to the client
 void send_status(int client, int status_code) {
     char response[BUF_SIZE];
     create_response(response, BUF_SIZE, status_code, "text/html");
@@ -304,51 +245,9 @@ void handle_script(int client, char* script_file, char* query_str) {
     unsetenv("QUERY_STRING");
 }
 
-// handles the url "/security"
-void handle_security(int client, char* query_str) {
-    handle_html(client, "security-page.html");
-    if (strstr(query_str, "true") != NULL) {
-        printf("Setting up\n");
-        char* path = "/dev/cu.usbmodem14101";
-        int uart = uart_open(path, B57600);
-        if(uart < 0){
-            printf("Error: Could not open %s\n", path);
-        }
-        printf("Connection Confirmed\n");
-
-        const char delim[2] = "=";
-        char *distance;
-        
-        /* get the first token */
-        distance = strtok(query_str, delim);
-        distance = strtok(NULL, delim);
-        distance = strtok(NULL, delim);
-        /* walk through other tokens */
-        printf("distance: %s.\n",distance);
-        //write(uart, distance, strlen(distance));
-
-        char buffer[1024];
-        memset(buffer, 0, sizeof(buffer));
-        while (1){
-            // Put code here to update website!
-            read(uart, buffer, sizeof(buffer));
-            printf("%s", buffer);
-            if (strcmp(buffer, "SECURITY BREACH") == 0) {
-                send(client, "<p>", 3, 0);
-                send(client, buffer, strlen(buffer), 0);
-                send(client, "</p>", 4, 0);
-                break;
-            }
-            memset(buffer, 0, sizeof(buffer));
-        }
-        // Connection is closed/lost, close the file and exit
-        close(uart);
-    }
-}
-
 // if file exists, it is either a directory or a regular file
 // if directory, call ls -l on it
-// if reg file, determine file extension (eg. .html, .py, .jpg, etc.)
+// if reg file, determine file extension (eg: .html, .jpg, etc.)
 void handle_GET(int client, char* file_request, char* query_string) {
     struct stat sb;
     if (stat(file_request, &sb) == -1) {
@@ -370,9 +269,6 @@ void handle_GET(int client, char* file_request, char* query_string) {
         }
         else if (is_cgi(file_request)) {
             handle_script(client, file_request, query_string);
-        }
-        else if (strcmp(file_request, "security")) {
-            handle_security(client, query_string);
         }
         else {
             send_status(client, 501);
@@ -397,77 +293,45 @@ char* parse_query(char* requested_path) {
 // determines the method of the request (eg. GET) and the requested file
 // then calls the appropriate function to deal with the request
 void handle_request(int client, char* request) {
-    printf("in handling resquests\n");
-    printf("client id is %d\n", client);
-    printf("ok al least we can print that \n");
     // parse the request by getting the first and second word
     char method[SMALL_BUF];
-    char temp_path[PATH_MAX];
-    if (sscanf(request, "%s %s", method, temp_path) < 2) {
+    char abs_path[PATH_MAX];
+    if (sscanf(request, "%s %s", method, abs_path) < 2) {
         perror("Parsing request failed");
     }
 
-    printf("temp path is: %s.\n", temp_path);
-
-    // search for a query string inside the GET path (temp_path)
-    // if one exists, remove it from temp_path
-    char* query_ptr = parse_query(temp_path);
+    // search for a query string inside the GET path (abs_path)
+    // if one exists, remove it from abs_path
+    char* query_ptr = parse_query(abs_path);
     if (strcmp(query_ptr, "") != 0) {
-        int index = query_ptr - temp_path; // the starting index of the query
-        temp_path[index] = '\0';
+        int index = query_ptr - abs_path; // the starting index of the query
+        abs_path[index] = '\0';
         query_ptr += 1;
     }
 
-    printf("temp path is now: %s, and query is %s.\n", temp_path, query_ptr);
-
     // add a "." before the requested path
     char relative_path[PATH_MAX];
-    snprintf(relative_path, PATH_MAX, ".%s", temp_path);
+    snprintf(relative_path, PATH_MAX, ".%s", abs_path);
 
     // deal with the request
     if (strcmp(method, "GET") == 0) {
         handle_GET(client, relative_path, query_ptr);
     } else {
-        // no other methods have been implemented
         send_status(client, 501);
     }
 }
 
-void serve_request(void* param) {
-    printf("now serving request\n");
-    int* int_param = param;
-    int client_fd = *int_param;
-    char* buf = malloc(BUF_SIZE);
-    ssize_t n_read = recv(client_fd, buf, BUF_SIZE, 0);
-    log_to_stdout(buf, n_read);
-    printf("client id is %d and request is %s\n", client_fd, buf);
-    //handle_request(client_fd, buf);
-    handle_dir(client_fd, "./");
-    close(client_fd);
-    printf("request served\n");
-    my_thr_exit(); // terminate the thread   
-}
-
 // code adapted from APUE textbook (pg 617-618)
-// if threads == 0, accept connections and fork a child process to serve requests
-// if threads == 1, accept connections and create a thread for each request
-int serve(int server, int threads) {
+// accept connections and fork a child process to serve requests
+int serve(int server) {
     int client_fd, status;
     pid_t pid;
-    int thread_id = 0;
     for(;;) {
         // accept a new connection (from our local machine)
         // accept will block if no connections are pending
         if ((client_fd = accept(server, NULL, NULL)) < 0) {
             perror("Accept error");
             exit(1);
-        }
-        if (threads) {
-            int* client_ptr = malloc(sizeof(int));
-            *client_ptr = client_fd;
-            my_thr_create(thread_id++, serve_request, client_ptr);
-            my_thr_start();
-            free(client_ptr);
         } else {
             // process the client's request by forking a child process
             if ((pid = fork()) < 0) {
@@ -490,7 +354,7 @@ int serve(int server, int threads) {
     }
 }
 
-int start_server(uint16_t port, int threads) {
+int start_server(uint16_t port) {
     // create a socket for our webserver
     int webserver;
     webserver = socket(AF_INET, SOCK_STREAM, 0);
@@ -513,24 +377,22 @@ int start_server(uint16_t port, int threads) {
         return 1;
     }
     
-    serve(webserver, threads);
+    serve(webserver);
 
     // might want to set up a signal handler for sigint to call close
     close(webserver);
     return 0;
 }
 
-
 int main(int argc, char const *argv[]) {
     if (argc < 2) {
         printf("Error: to start server use: $./webserv port-number\n");
         exit(1);
     }   
-    uint16_t port = (uint16_t) strtol(argv[1], NULL, 10);
-    int threads = (int) strtol(argv[2], NULL, 10);
+    uint16_t port = (uint16_t) strtol(argv[1], NULL, 10);;
     printf("Running on http://127.0.0.1:%u/ (Press CTRL+C to quit)\n", port);
 
-    if (start_server(port, threads) != 0) {
+    if (start_server(port) != 0) {
         exit(1);
     }
     return 0;

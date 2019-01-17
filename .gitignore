@@ -1,0 +1,13 @@
+# Compiled source #
+###################
+*.o
+*.so
+
+# Logs #
+######################
+*.log
+
+# Specific files #
+###################
+.vscode
+test_files
