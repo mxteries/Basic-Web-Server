@@ -245,40 +245,6 @@ void handle_script(int client, char* script_file, char* query_str) {
     unsetenv("QUERY_STRING");
 }
 
-// if file exists, it is either a directory or a regular file
-// if directory, call ls -l on it
-// if reg file, determine file extension (eg: .html, .jpg, etc.)
-void handle_GET(int client, char* file_request, char* query_string) {
-    struct stat sb;
-    if (stat(file_request, &sb) == -1) {
-        /* if stat fails, assume file doesn't exist */
-        perror("stat");
-        send_status(client, 404);
-    } 
-    else if (S_ISDIR(sb.st_mode)) {
-        /* handle directory files */
-        handle_dir(client, file_request);
-    } 
-    else if (S_ISREG(sb.st_mode)) {
-        /* handle regular files */
-        if (has_extension(file_request, "html")) {
-            handle_html(client, file_request);
-        }
-        else if (is_image(file_request)) {
-            handle_img(client, file_request, get_file_extension(file_request));
-        }
-        else if (is_cgi(file_request)) {
-            handle_script(client, file_request, query_string);
-        }
-        else {
-            send_status(client, 501);
-        }
-    } else {
-        /* unknown file type */
-        send_status(client, 501);
-    }
-}
-
 // given "/some/file/path?query=value&query2=value2"
 // return "?query=value&query2=value2" or "" if no query exists
 char* parse_query(char* requested_path) {
@@ -290,32 +256,62 @@ char* parse_query(char* requested_path) {
     }
 }
 
+// parse the URL for the requested file and any query strings 
+// then stat the file to determine what to do with it
+void handle_GET(int client, char* URL) {
+
+    // search and remove the query string inside the URL (if exists)
+    char* query_string = parse_query(URL);
+    if (strcmp(query_string, "") != 0) {
+        // remove the query string from the URL by replacing the '?' with '\0'
+        int index = query_string - URL;
+        URL[index] = '\0';
+        query_string += 1;
+    }
+
+    struct stat sb;
+    if (stat(URL, &sb) == -1) {
+        /* if stat fails, assume file doesn't exist */
+        perror("stat");
+        send_status(client, 404);
+    } 
+    else if (S_ISDIR(sb.st_mode)) {
+        /* handle directory files */
+        handle_dir(client, URL);
+    } 
+    else if (S_ISREG(sb.st_mode)) {
+        /* handle regular files */
+        if (has_extension(URL, "html")) {
+            handle_html(client, URL);
+        }
+        else if (is_image(URL)) {
+            handle_img(client, URL, get_file_extension(URL));
+        }
+        else if (is_cgi(URL)) {
+            handle_script(client, URL, query_string);
+        }
+        else {
+            send_status(client, 501);
+        }
+    } else {
+        /* unknown file type */
+        send_status(client, 501);
+    }
+}
+
 // determines the method of the request (eg. GET) and the requested file
 // then calls the appropriate function to deal with the request
 void handle_request(int client, char* request) {
     // parse the request by getting the first and second word
     char method[SMALL_BUF];
-    char abs_path[PATH_MAX];
-    if (sscanf(request, "%s %s", method, abs_path) < 2) {
+    char URL[PATH_MAX] = ".";  // add a "." before the path 
+    if (sscanf(request, "%s %s", method, &URL[1]) < 2) {
         perror("Parsing request failed");
     }
 
-    // search for a query string inside the GET path (abs_path)
-    // if one exists, remove it from abs_path
-    char* query_ptr = parse_query(abs_path);
-    if (strcmp(query_ptr, "") != 0) {
-        int index = query_ptr - abs_path; // the starting index of the query
-        abs_path[index] = '\0';
-        query_ptr += 1;
-    }
-
-    // add a "." before the requested path
-    char relative_path[PATH_MAX];
-    snprintf(relative_path, PATH_MAX, ".%s", abs_path);
-
     // deal with the request
     if (strcmp(method, "GET") == 0) {
-        handle_GET(client, relative_path, query_ptr);
+        handle_GET(client, URL);
     } else {
         send_status(client, 501);
     }
